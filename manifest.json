@@ -1,0 +1,9 @@
+{
+  "id": "csv-editor",
+  "name": "CSV Editor",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "Open and edit .csv files in a spreadsheet-like grid with keyboard navigation, range selection, copy/paste, sorting, and auto-save.",
+  "author": "ractodaisuki",
+  "isDesktopOnly": false
+}

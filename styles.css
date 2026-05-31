@@ -1,0 +1,157 @@
+/* ---- CSV Editor view layout ---- */
+.csv-editor-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 0;
+}
+
+.csv-editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  flex: 0 0 auto;
+}
+
+.csv-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.csv-toolbar-icon {
+  display: inline-flex;
+  align-items: center;
+}
+
+.csv-save-status {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+.csv-save-status.is-dirty {
+  color: var(--text-accent);
+}
+
+.csv-editor-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+
+/* ---- grid ---- */
+.csv-editor-root {
+  height: 100%;
+}
+
+.csv-scroller {
+  height: 100%;
+  width: 100%;
+  overflow: auto;
+  outline: none;
+}
+
+.csv-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--font-ui-small);
+  font-family: var(--font-interface);
+  table-layout: auto;
+}
+
+.csv-table th,
+.csv-table td {
+  border-right: 1px solid var(--background-modifier-border);
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding: 3px 8px;
+  height: 26px;
+  max-width: 320px;
+  min-width: 60px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  box-sizing: border-box;
+}
+
+/* header row */
+.csv-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.csv-header-label {
+  display: inline-block;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+}
+
+.csv-sort-ind {
+  color: var(--text-accent);
+  font-size: 0.85em;
+}
+
+/* corner + row-number gutter */
+.csv-corner,
+.csv-gutter {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  text-align: center;
+  min-width: 44px;
+  width: 44px;
+  max-width: 44px;
+  cursor: pointer;
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+.csv-corner {
+  z-index: 3;
+  top: 0;
+}
+
+/* body cells */
+.csv-cell {
+  background: var(--background-primary);
+  color: var(--text-normal);
+  cursor: cell;
+}
+
+.csv-cell.csv-selected {
+  background: var(--text-selection);
+}
+
+.csv-cell.csv-active {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: -2px;
+  position: relative;
+  z-index: 1;
+}
+
+/* inline editor */
+.csv-cell-input {
+  width: 100%;
+  height: 100%;
+  border: none;
+  outline: none;
+  padding: 0;
+  margin: 0;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font: inherit;
+  box-shadow: none;
+}
