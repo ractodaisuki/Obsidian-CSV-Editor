@@ -42,13 +42,83 @@
   position: relative;
 }
 
+/* ---- filter bar ---- */
+.csv-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  flex: 0 0 auto;
+}
+
+.csv-filter-group {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.csv-filter-right {
+  margin-left: auto;
+}
+
+.csv-filter-label {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.csv-filter-input {
+  min-width: 140px;
+}
+
+.csv-filter-input,
+.csv-filter-select,
+.csv-filter-date {
+  font-size: var(--font-ui-smaller);
+  padding: 2px 6px;
+  height: 26px;
+}
+
+.csv-filter-tilde {
+  color: var(--text-muted);
+}
+
+.csv-filter-clear {
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+  height: 26px;
+}
+
+.csv-filter-count {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.csv-filter-count.is-filtering {
+  color: var(--text-accent);
+  font-weight: 600;
+}
+
+/* empty / no-match row */
+.csv-empty {
+  padding: 14px 10px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
 /* ---- grid ---- */
 .csv-editor-root {
   height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
 .csv-scroller {
-  height: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
   width: 100%;
   overflow: auto;
   outline: none;

@@ -10,23 +10,47 @@ interface Row {
 }
 
 interface Cell {
-  r: number; // index into this.rows (display order)
+  r: number; // index into this.visible (rendered display order)
   c: number; // column index
+}
+
+interface FilterState {
+  text: string;
+  textCol: number; // -1 = all columns
+  dateCol: number; // -1 = none
+  dateFrom: string; // yyyy-mm-dd
+  dateTo: string; // yyyy-mm-dd
+  catCol: number; // -1 = none
+  catVal: string; // "" = all values
 }
 
 /**
  * A vanilla-TS spreadsheet grid for a single CSV file. Owns the data model,
- * rendering, keyboard navigation, range selection, clipboard, and sorting.
- * It reports edits through the `onChange` callback; persistence is the
- * caller's job.
+ * rendering, keyboard navigation, range selection, clipboard, sorting, and
+ * filtering. It reports edits through `onChange`; persistence is the caller's
+ * job. Sorting and filtering are non-destructive (they never change what gets
+ * written back to disk).
  */
 export class CSVGrid {
   private headers: string[] = [""];
-  private rows: Row[] = [];
+  private rows: Row[] = []; // all rows, in canonical display order
+  private visible: Row[] = []; // rows passing the current filter (references)
   private nextId = 0;
 
   private sortCol: number | null = null;
   private sortDir: "asc" | "desc" = "asc";
+
+  private filter: FilterState = {
+    text: "",
+    textCol: -1,
+    dateCol: -1,
+    dateFrom: "",
+    dateTo: "",
+    catCol: -1,
+    catVal: "",
+  };
+  private fromTs: number | null = null;
+  private toTs: number | null = null;
 
   private anchor: Cell = { r: 0, c: 0 };
   private active: Cell = { r: 0, c: 0 };
@@ -35,8 +59,20 @@ export class CSVGrid {
   private headerEls: HTMLElement[] = [];
 
   private root: HTMLElement;
+  private filterBar!: HTMLElement;
   private scroller!: HTMLElement;
   private table!: HTMLTableElement;
+
+  // filter controls (rebuilt when columns change)
+  private elTextInput!: HTMLInputElement;
+  private elTextCol!: HTMLSelectElement;
+  private elDateCol!: HTMLSelectElement;
+  private elDateFrom!: HTMLInputElement;
+  private elDateTo!: HTMLInputElement;
+  private elCatCol!: HTMLSelectElement;
+  private elCatVal!: HTMLSelectElement;
+  private elCount!: HTMLElement;
+
   private editing: { input: HTMLInputElement; r: number; c: number } | null = null;
   private dragging = false;
   /** Internal fallback buffer used when the async clipboard API is unavailable. */
@@ -52,6 +88,8 @@ export class CSVGrid {
     this.root.addClass("csv-editor-root");
     this.load(csvText);
     this.buildSkeleton();
+    this.applyFilter();
+    this.refreshFilterControls();
     this.render();
     this.attachGlobalHandlers();
   }
@@ -80,6 +118,11 @@ export class CSVGrid {
     return this.headers.length;
   }
 
+  /** Index of a visible row within the canonical `rows` array. */
+  private baseIndex(visibleRow: number): number {
+    return this.rows.indexOf(this.visible[visibleRow]);
+  }
+
   /** "Bake" the current display order into the canonical order. Called before
    *  structural edits so inserts/deletes apply to what the user actually sees. */
   private bake() {
@@ -88,12 +131,197 @@ export class CSVGrid {
     this.sortCol = null;
   }
 
+  // ---- filtering --------------------------------------------------------
+
+  private get filterActive(): boolean {
+    const f = this.filter;
+    return (
+      f.text.trim() !== "" ||
+      (f.dateCol !== -1 && (f.dateFrom !== "" || f.dateTo !== "")) ||
+      (f.catCol !== -1 && f.catVal !== "")
+    );
+  }
+
+  private applyFilter() {
+    const f = this.filter;
+    this.fromTs = f.dateFrom ? parseDate(f.dateFrom) : null;
+    const endTs = f.dateTo ? parseDate(f.dateTo) : null;
+    // Make the "to" date inclusive of the whole day.
+    this.toTs = endTs === null ? null : endTs + 24 * 60 * 60 * 1000 - 1;
+
+    if (!this.filterActive) {
+      this.visible = this.rows.slice();
+      return;
+    }
+    this.visible = this.rows.filter((row) => this.matches(row));
+  }
+
+  private matches(row: Row): boolean {
+    const f = this.filter;
+
+    if (f.text.trim() !== "") {
+      const q = f.text.toLowerCase();
+      const cells =
+        f.textCol === -1 ? row.cells : [row.cells[f.textCol] ?? ""];
+      if (!cells.some((v) => (v ?? "").toLowerCase().includes(q))) return false;
+    }
+
+    if (f.dateCol !== -1 && (this.fromTs !== null || this.toTs !== null)) {
+      const ts = parseDate(row.cells[f.dateCol] ?? "");
+      if (ts === null) return false;
+      if (this.fromTs !== null && ts < this.fromTs) return false;
+      if (this.toTs !== null && ts > this.toTs) return false;
+    }
+
+    if (f.catCol !== -1 && f.catVal !== "") {
+      if ((row.cells[f.catCol] ?? "") !== f.catVal) return false;
+    }
+
+    return true;
+  }
+
+  private refilterAndRender() {
+    this.applyFilter();
+    this.render();
+    this.updateCount();
+  }
+
   // ---- rendering --------------------------------------------------------
 
   private buildSkeleton() {
+    this.filterBar = this.root.createDiv({ cls: "csv-filter-bar" });
+    this.buildFilterBar();
     this.scroller = this.root.createDiv({ cls: "csv-scroller" });
     this.scroller.tabIndex = 0;
     this.table = this.scroller.createEl("table", { cls: "csv-table" });
+  }
+
+  private buildFilterBar() {
+    const bar = this.filterBar;
+    bar.empty();
+
+    // --- text search ---
+    const g1 = bar.createDiv({ cls: "csv-filter-group" });
+    g1.createSpan({ cls: "csv-filter-label", text: "検索" });
+    this.elTextInput = g1.createEl("input", {
+      cls: "csv-filter-input",
+      type: "text",
+      placeholder: "キーワード…",
+    });
+    this.elTextInput.value = this.filter.text;
+    this.elTextInput.addEventListener("input", () => {
+      this.filter.text = this.elTextInput.value;
+      this.refilterAndRender();
+    });
+    this.elTextCol = g1.createEl("select", { cls: "csv-filter-select" });
+    this.elTextCol.addEventListener("change", () => {
+      this.filter.textCol = parseInt(this.elTextCol.value, 10);
+      this.refilterAndRender();
+    });
+
+    // --- date range ---
+    const g2 = bar.createDiv({ cls: "csv-filter-group" });
+    g2.createSpan({ cls: "csv-filter-label", text: "期間" });
+    this.elDateCol = g2.createEl("select", { cls: "csv-filter-select" });
+    this.elDateCol.addEventListener("change", () => {
+      this.filter.dateCol = parseInt(this.elDateCol.value, 10);
+      this.refilterAndRender();
+    });
+    this.elDateFrom = g2.createEl("input", { cls: "csv-filter-date", type: "date" });
+    this.elDateFrom.value = this.filter.dateFrom;
+    this.elDateFrom.addEventListener("change", () => {
+      this.filter.dateFrom = this.elDateFrom.value;
+      this.refilterAndRender();
+    });
+    g2.createSpan({ cls: "csv-filter-tilde", text: "〜" });
+    this.elDateTo = g2.createEl("input", { cls: "csv-filter-date", type: "date" });
+    this.elDateTo.value = this.filter.dateTo;
+    this.elDateTo.addEventListener("change", () => {
+      this.filter.dateTo = this.elDateTo.value;
+      this.refilterAndRender();
+    });
+
+    // --- category / value ---
+    const g3 = bar.createDiv({ cls: "csv-filter-group" });
+    g3.createSpan({ cls: "csv-filter-label", text: "絞り込み" });
+    this.elCatCol = g3.createEl("select", { cls: "csv-filter-select" });
+    this.elCatCol.addEventListener("change", () => {
+      this.filter.catCol = parseInt(this.elCatCol.value, 10);
+      this.filter.catVal = "";
+      this.populateCatValues();
+      this.refilterAndRender();
+    });
+    this.elCatVal = g3.createEl("select", { cls: "csv-filter-select" });
+    this.elCatVal.addEventListener("change", () => {
+      this.filter.catVal = this.elCatVal.value;
+      this.refilterAndRender();
+    });
+
+    // --- clear + count ---
+    const g4 = bar.createDiv({ cls: "csv-filter-group csv-filter-right" });
+    const clearBtn = g4.createEl("button", { cls: "csv-filter-clear", text: "クリア" });
+    clearBtn.addEventListener("click", () => this.clearFilters());
+    this.elCount = g4.createSpan({ cls: "csv-filter-count" });
+  }
+
+  /** Rebuild the column option lists; call whenever headers change. */
+  private refreshFilterControls() {
+    const colOptions = (sel: HTMLSelectElement, includeAll: string, current: number) => {
+      sel.empty();
+      sel.createEl("option", { value: "-1", text: includeAll });
+      for (let c = 0; c < this.nCols; c++) {
+        sel.createEl("option", { value: String(c), text: this.headers[c] || `列${c + 1}` });
+      }
+      sel.value = current < this.nCols ? String(current) : "-1";
+    };
+    colOptions(this.elTextCol, "全列", this.filter.textCol);
+    colOptions(this.elDateCol, "日付列…", this.filter.dateCol);
+    colOptions(this.elCatCol, "列…", this.filter.catCol);
+    this.filter.textCol = parseInt(this.elTextCol.value, 10);
+    this.filter.dateCol = parseInt(this.elDateCol.value, 10);
+    this.filter.catCol = parseInt(this.elCatCol.value, 10);
+    this.populateCatValues();
+  }
+
+  /** Populate the category value dropdown with distinct values of the chosen column. */
+  private populateCatValues() {
+    this.elCatVal.empty();
+    this.elCatVal.createEl("option", { value: "", text: "すべて" });
+    if (this.filter.catCol === -1) {
+      this.elCatVal.disabled = true;
+      return;
+    }
+    this.elCatVal.disabled = false;
+    const seen = new Set<string>();
+    for (const row of this.rows) {
+      const v = row.cells[this.filter.catCol] ?? "";
+      if (v !== "" && !seen.has(v)) seen.add(v);
+    }
+    const values = Array.from(seen).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    for (const v of values) this.elCatVal.createEl("option", { value: v, text: v });
+    if (!seen.has(this.filter.catVal)) this.filter.catVal = "";
+    this.elCatVal.value = this.filter.catVal;
+  }
+
+  private clearFilters() {
+    this.filter = { text: "", textCol: -1, dateCol: -1, dateFrom: "", dateTo: "", catCol: -1, catVal: "" };
+    this.elTextInput.value = "";
+    this.elDateFrom.value = "";
+    this.elDateTo.value = "";
+    this.refreshFilterControls();
+    this.refilterAndRender();
+  }
+
+  private updateCount() {
+    const total = this.rows.length;
+    const shown = this.visible.length;
+    if (this.filterActive) {
+      this.elCount.setText(`表示 ${shown} / 全 ${total} 行`);
+      this.elCount.toggleClass("is-filtering", true);
+    } else {
+      this.elCount.setText(`全 ${total} 行`);
+      this.elCount.toggleClass("is-filtering", false);
+    }
   }
 
   private render() {
@@ -119,9 +347,14 @@ export class CSVGrid {
       this.headerEls.push(th);
     }
 
-    // Body rows.
+    // Body rows (filtered view).
     const tbody = this.table.createEl("tbody");
-    for (let r = 0; r < this.rows.length; r++) {
+    if (this.visible.length === 0) {
+      const tr = tbody.createEl("tr");
+      const td = tr.createEl("td", { cls: "csv-empty", attr: { colspan: String(this.nCols + 1) } });
+      td.setText(this.filterActive ? "条件に一致する行がありません" : "（空）");
+    }
+    for (let r = 0; r < this.visible.length; r++) {
       const tr = tbody.createEl("tr");
       const gutter = tr.createEl("td", { cls: "csv-gutter", text: String(r + 1) });
       gutter.addEventListener("click", () => this.selectRow(r));
@@ -129,7 +362,7 @@ export class CSVGrid {
       const rowEls: HTMLElement[] = [];
       for (let c = 0; c < this.nCols; c++) {
         const td = tr.createEl("td", { cls: "csv-cell" });
-        td.setText(this.rows[r].cells[c] ?? "");
+        td.setText(this.visible[r].cells[c] ?? "");
         this.wireCell(td, r, c);
         rowEls.push(td);
       }
@@ -138,6 +371,7 @@ export class CSVGrid {
 
     this.clampActive();
     this.paintSelection();
+    this.updateCount();
   }
 
   private wireCell(td: HTMLElement, r: number, c: number) {
@@ -188,7 +422,7 @@ export class CSVGrid {
   }
 
   private clampActive() {
-    const maxR = Math.max(0, this.rows.length - 1);
+    const maxR = Math.max(0, this.visible.length - 1);
     const maxC = Math.max(0, this.nCols - 1);
     this.active.r = Math.min(Math.max(0, this.active.r), maxR);
     this.active.c = Math.min(Math.max(0, this.active.c), maxC);
@@ -215,9 +449,9 @@ export class CSVGrid {
   }
 
   private selectAll() {
-    if (this.rows.length === 0) return;
+    if (this.visible.length === 0) return;
     this.anchor = { r: 0, c: 0 };
-    this.active = { r: this.rows.length - 1, c: this.nCols - 1 };
+    this.active = { r: this.visible.length - 1, c: this.nCols - 1 };
     this.scroller.focus();
     this.paintSelection();
   }
@@ -232,7 +466,7 @@ export class CSVGrid {
   private moveActive(dr: number, dc: number, extend: boolean) {
     let r = this.active.r + dr;
     let c = this.active.c + dc;
-    r = Math.min(Math.max(0, r), Math.max(0, this.rows.length - 1));
+    r = Math.min(Math.max(0, r), Math.max(0, this.visible.length - 1));
     c = Math.min(Math.max(0, c), Math.max(0, this.nCols - 1));
     this.active = { r, c };
     if (!extend) this.anchor = { r, c };
@@ -242,13 +476,14 @@ export class CSVGrid {
   // ---- editing ----------------------------------------------------------
 
   private beginEdit(r: number, c: number, initial?: string) {
+    if (this.visible.length === 0) return;
     this.finishEdit(true);
     this.anchor = { r, c };
     this.active = { r, c };
     const td = this.cellEls[r][c];
     td.empty();
     const input = td.createEl("input", { cls: "csv-cell-input", type: "text" });
-    input.value = initial !== undefined ? initial : this.rows[r].cells[c] ?? "";
+    input.value = initial !== undefined ? initial : this.visible[r].cells[c] ?? "";
     this.editing = { input, r, c };
     input.focus();
     if (initial === undefined) input.select();
@@ -271,7 +506,6 @@ export class CSVGrid {
       e.preventDefault();
       this.finishEdit(false);
     }
-    // Otherwise let the input handle the keystroke.
     e.stopPropagation();
   }
 
@@ -281,13 +515,15 @@ export class CSVGrid {
     const value = input.value;
     this.editing = null;
     const td = this.cellEls[r]?.[c];
-    if (commit && this.rows[r] && this.rows[r].cells[c] !== value) {
-      this.rows[r].cells[c] = value;
+    const row = this.visible[r];
+    // Editing does not re-apply the filter, so a row never vanishes mid-edit.
+    if (commit && row && row.cells[c] !== value) {
+      row.cells[c] = value;
       this.onChange();
     }
     if (td) {
       td.empty();
-      td.setText(this.rows[r]?.cells[c] ?? "");
+      td.setText(row?.cells[c] ?? "");
     }
     this.scroller.focus();
   }
@@ -299,7 +535,6 @@ export class CSVGrid {
     this.scroller.addEventListener("copy", (e) => this.onCopy(e));
     this.scroller.addEventListener("cut", (e) => this.onCut(e));
     this.scroller.addEventListener("paste", (e) => this.onPaste(e));
-    // End a drag even if the pointer leaves the grid.
     this.root.addEventListener("mouseup", () => (this.dragging = false));
   }
 
@@ -312,7 +547,6 @@ export class CSVGrid {
       this.selectAll();
       return;
     }
-    // Let copy/cut/paste flow through to the native clipboard events.
     if (ctrl && ["c", "x", "v"].includes(e.key.toLowerCase())) return;
 
     switch (e.key) {
@@ -337,9 +571,6 @@ export class CSVGrid {
         this.moveActive(0, e.shiftKey ? -1 : 1, false);
         return;
       case "Enter":
-        e.preventDefault();
-        this.beginEdit(this.active.r, this.active.c);
-        return;
       case "F2":
         e.preventDefault();
         this.beginEdit(this.active.r, this.active.c);
@@ -351,7 +582,6 @@ export class CSVGrid {
         return;
     }
 
-    // Printable character → start editing with it.
     if (e.key.length === 1 && !ctrl && !e.altKey) {
       e.preventDefault();
       this.beginEdit(this.active.r, this.active.c, e.key);
@@ -365,7 +595,7 @@ export class CSVGrid {
     const out: string[][] = [];
     for (let r = s.r1; r <= s.r2; r++) {
       const line: string[] = [];
-      for (let c = s.c1; c <= s.c2; c++) line.push(this.rows[r]?.cells[c] ?? "");
+      for (let c = s.c1; c <= s.c2; c++) line.push(this.visible[r]?.cells[c] ?? "");
       out.push(line);
     }
     return out;
@@ -397,25 +627,30 @@ export class CSVGrid {
     const s = this.selRect();
     const startR = s.r1;
     const startC = s.c1;
-    const needRows = startR + matrix.length;
-    const needCols = startC + Math.max(...matrix.map((row) => row.length));
+    const pasteCols = Math.max(...matrix.map((row) => row.length));
+    const needCols = startC + pasteCols;
 
-    while (this.nCols < needCols) this.addColumnAt(this.nCols, false);
-    while (this.rows.length < needRows) {
-      this.rows.push({ id: this.nextId++, cells: new Array(this.nCols).fill("") });
-    }
+    while (this.nCols < needCols) this.addColumnAt(this.nCols, false, false);
 
+    // Fill into existing visible rows; append new canonical rows if needed.
     for (let i = 0; i < matrix.length; i++) {
+      const vr = startR + i;
+      let row = this.visible[vr];
+      if (!row) {
+        row = { id: this.nextId++, cells: new Array(this.nCols).fill("") };
+        this.rows.push(row);
+        this.visible.push(row);
+      }
       for (let j = 0; j < matrix[i].length; j++) {
-        this.rows[startR + i].cells[startC + j] = matrix[i][j];
+        row.cells[startC + j] = matrix[i][j];
       }
     }
     this.anchor = { r: startR, c: startC };
     this.active = {
-      r: Math.min(startR + matrix.length - 1, this.rows.length - 1),
+      r: Math.min(startR + matrix.length - 1, this.visible.length - 1),
       c: Math.min(needCols - 1, this.nCols - 1),
     };
-    this.render();
+    this.refilterAndRender();
     this.onChange();
   }
 
@@ -424,8 +659,9 @@ export class CSVGrid {
     let changed = false;
     for (let r = s.r1; r <= s.r2; r++) {
       for (let c = s.c1; c <= s.c2; c++) {
-        if (this.rows[r]?.cells[c]) {
-          this.rows[r].cells[c] = "";
+        const row = this.visible[r];
+        if (row?.cells[c]) {
+          row.cells[c] = "";
           this.cellEls[r][c].setText("");
           changed = true;
         }
@@ -445,52 +681,77 @@ export class CSVGrid {
     }
     const dir = this.sortDir === "asc" ? 1 : -1;
     this.rows.sort((a, b) => compareValues(a.cells[col] ?? "", b.cells[col] ?? "") * dir);
-    this.render();
+    this.refilterAndRender();
   }
 
   private clearSort() {
     if (this.sortCol === null) return;
     this.sortCol = null;
     this.rows.sort((a, b) => a.id - b.id);
-    this.render();
+    this.refilterAndRender();
   }
 
   // ---- structural edits -------------------------------------------------
 
-  private addRowAt(index: number, focus: boolean) {
+  private addRowAt(visibleIndex: number, below: boolean, focus: boolean) {
     this.bake();
     const row: Row = { id: this.nextId++, cells: new Array(this.nCols).fill("") };
-    this.rows.splice(index, 0, row);
+    let insertAt: number;
+    if (this.visible.length === 0) {
+      insertAt = this.rows.length;
+    } else {
+      const ref = Math.min(visibleIndex, this.visible.length - 1);
+      insertAt = this.baseIndex(ref) + (below ? 1 : 0);
+    }
+    this.rows.splice(insertAt, 0, row);
+    this.applyFilter();
     if (focus) {
-      this.anchor = { r: index, c: 0 };
-      this.active = { r: index, c: 0 };
+      const vr = this.visible.indexOf(row);
+      if (vr !== -1) {
+        this.anchor = { r: vr, c: 0 };
+        this.active = { r: vr, c: 0 };
+      }
     }
     this.render();
+    this.populateCatValues();
     this.onChange();
   }
 
   private deleteRowsInSelection() {
     this.bake();
     const s = this.selRect();
-    this.rows.splice(s.r1, s.r2 - s.r1 + 1);
+    const toRemove = new Set<Row>();
+    for (let r = s.r1; r <= s.r2; r++) {
+      if (this.visible[r]) toRemove.add(this.visible[r]);
+    }
+    this.rows = this.rows.filter((row) => !toRemove.has(row));
     if (this.rows.length === 0) {
       this.rows.push({ id: this.nextId++, cells: new Array(this.nCols).fill("") });
     }
-    this.active = { r: Math.min(s.r1, this.rows.length - 1), c: this.active.c };
+    this.applyFilter();
+    this.active = { r: Math.min(s.r1, Math.max(0, this.visible.length - 1)), c: this.active.c };
     this.anchor = { ...this.active };
     this.render();
+    this.populateCatValues();
     this.onChange();
   }
 
-  private addColumnAt(index: number, focus: boolean) {
+  private addColumnAt(index: number, focus: boolean, rerender = true) {
     this.headers.splice(index, 0, "");
     for (const row of this.rows) row.cells.splice(index, 0, "");
+    // Shift filter column references that sit at/after the insertion point.
+    if (this.filter.textCol >= index) this.filter.textCol++;
+    if (this.filter.dateCol >= index) this.filter.dateCol++;
+    if (this.filter.catCol >= index) this.filter.catCol++;
     if (focus) {
       this.anchor = { r: this.active.r, c: index };
       this.active = { r: this.active.r, c: index };
     }
-    this.render();
-    this.onChange();
+    if (rerender) {
+      this.refreshFilterControls();
+      this.render();
+      this.onChange();
+    }
   }
 
   private deleteColumnsInSelection() {
@@ -499,9 +760,19 @@ export class CSVGrid {
     if (count >= this.nCols) return; // keep at least one column
     this.headers.splice(s.c1, count);
     for (const row of this.rows) row.cells.splice(s.c1, count);
+    // Reset any filter column that pointed into the removed range.
+    const fix = (col: number) => {
+      if (col === -1) return -1;
+      if (col >= s.c1 && col <= s.c2) return -1;
+      return col > s.c2 ? col - count : col;
+    };
+    this.filter.textCol = fix(this.filter.textCol);
+    this.filter.dateCol = fix(this.filter.dateCol);
+    this.filter.catCol = fix(this.filter.catCol);
     this.active = { r: this.active.r, c: Math.min(s.c1, this.nCols - 1) };
     this.anchor = { ...this.active };
-    this.render();
+    this.refreshFilterControls();
+    this.refilterAndRender();
     this.onChange();
   }
 
@@ -517,6 +788,7 @@ export class CSVGrid {
         this.headers[col] = input.value;
         this.onChange();
       }
+      this.refreshFilterControls();
       this.render();
     };
     input.addEventListener("keydown", (e) => {
@@ -537,74 +809,56 @@ export class CSVGrid {
   private showCellMenu(e: MouseEvent, r: number, c: number) {
     e.preventDefault();
     const menu = new Menu();
-    menu.addItem((i) =>
-      i.setTitle("Copy").setIcon("copy").onClick(() => this.menuCopy(false))
-    );
-    menu.addItem((i) =>
-      i.setTitle("Cut").setIcon("scissors").onClick(() => this.menuCopy(true))
-    );
-    menu.addItem((i) =>
-      i.setTitle("Paste").setIcon("clipboard-paste").onClick(() => this.menuPaste())
-    );
+    menu.addItem((i) => i.setTitle("コピー").setIcon("copy").onClick(() => this.menuCopy(false)));
+    menu.addItem((i) => i.setTitle("切り取り").setIcon("scissors").onClick(() => this.menuCopy(true)));
+    menu.addItem((i) => i.setTitle("貼り付け").setIcon("clipboard-paste").onClick(() => this.menuPaste()));
     menu.addSeparator();
-    menu.addItem((i) =>
-      i.setTitle("Insert row above").setIcon("arrow-up").onClick(() => this.addRowAt(r, true))
-    );
-    menu.addItem((i) =>
-      i.setTitle("Insert row below").setIcon("arrow-down").onClick(() => this.addRowAt(r + 1, true))
-    );
-    menu.addItem((i) =>
-      i.setTitle("Delete row(s)").setIcon("trash").onClick(() => this.deleteRowsInSelection())
-    );
+    menu.addItem((i) => i.setTitle("上に行を挿入").setIcon("arrow-up").onClick(() => this.addRowAt(r, false, true)));
+    menu.addItem((i) => i.setTitle("下に行を挿入").setIcon("arrow-down").onClick(() => this.addRowAt(r, true, true)));
+    menu.addItem((i) => i.setTitle("行を削除").setIcon("trash").onClick(() => this.deleteRowsInSelection()));
     menu.addSeparator();
-    menu.addItem((i) =>
-      i.setTitle("Insert column left").setIcon("arrow-left").onClick(() => this.addColumnAt(c, true))
-    );
-    menu.addItem((i) =>
-      i.setTitle("Insert column right").setIcon("arrow-right").onClick(() => this.addColumnAt(c + 1, true))
-    );
-    menu.addItem((i) =>
-      i.setTitle("Delete column(s)").setIcon("trash").onClick(() => this.deleteColumnsInSelection())
-    );
+    menu.addItem((i) => i.setTitle("左に列を挿入").setIcon("arrow-left").onClick(() => this.addColumnAt(c, true)));
+    menu.addItem((i) => i.setTitle("右に列を挿入").setIcon("arrow-right").onClick(() => this.addColumnAt(c + 1, true)));
+    menu.addItem((i) => i.setTitle("列を削除").setIcon("trash").onClick(() => this.deleteColumnsInSelection()));
     menu.addSeparator();
-    menu.addItem((i) =>
-      i.setTitle("Clear cell(s)").setIcon("eraser").onClick(() => this.clearSelection())
-    );
+    menu.addItem((i) => i.setTitle("セルをクリア").setIcon("eraser").onClick(() => this.clearSelection()));
     menu.showAtMouseEvent(e);
   }
 
   private showHeaderMenu(e: MouseEvent, c: number) {
     e.preventDefault();
     const menu = new Menu();
+    menu.addItem((i) => i.setTitle("列名を変更").setIcon("pencil").onClick(() => this.renameColumn(c)));
     menu.addItem((i) =>
-      i.setTitle("Rename column").setIcon("pencil").onClick(() => this.renameColumn(c))
-    );
-    menu.addItem((i) =>
-      i.setTitle("Sort ascending").setIcon("arrow-up-narrow-wide").onClick(() => {
+      i.setTitle("昇順で並べ替え").setIcon("arrow-up-narrow-wide").onClick(() => {
         this.sortCol = c;
         this.sortDir = "desc"; // toggleSort flips it to asc
         this.toggleSort(c);
       })
     );
     menu.addItem((i) =>
-      i.setTitle("Sort descending").setIcon("arrow-down-wide-narrow").onClick(() => {
+      i.setTitle("降順で並べ替え").setIcon("arrow-down-wide-narrow").onClick(() => {
         this.sortCol = c;
         this.sortDir = "asc"; // toggleSort flips it to desc
         this.toggleSort(c);
       })
     );
-    menu.addItem((i) =>
-      i.setTitle("Clear sort").setIcon("x").onClick(() => this.clearSort())
-    );
+    menu.addItem((i) => i.setTitle("並べ替えを解除").setIcon("x").onClick(() => this.clearSort()));
     menu.addSeparator();
     menu.addItem((i) =>
-      i.setTitle("Insert column left").setIcon("arrow-left").onClick(() => this.addColumnAt(c, true))
+      i.setTitle("この列で絞り込み").setIcon("filter").onClick(() => {
+        this.filter.catCol = c;
+        this.filter.catVal = "";
+        this.refreshFilterControls();
+        this.elCatCol.value = String(c);
+        this.refilterAndRender();
+      })
     );
+    menu.addSeparator();
+    menu.addItem((i) => i.setTitle("左に列を挿入").setIcon("arrow-left").onClick(() => this.addColumnAt(c, true)));
+    menu.addItem((i) => i.setTitle("右に列を挿入").setIcon("arrow-right").onClick(() => this.addColumnAt(c + 1, true)));
     menu.addItem((i) =>
-      i.setTitle("Insert column right").setIcon("arrow-right").onClick(() => this.addColumnAt(c + 1, true))
-    );
-    menu.addItem((i) =>
-      i.setTitle("Delete column").setIcon("trash").onClick(() => {
+      i.setTitle("列を削除").setIcon("trash").onClick(() => {
         this.anchor = { r: this.active.r, c };
         this.active = { r: this.active.r, c };
         this.deleteColumnsInSelection();
@@ -646,4 +900,17 @@ function compareValues(a: string, b: string): number {
   const bNum = b.trim() !== "" && !isNaN(nb);
   if (aNum && bNum) return na - nb;
   return a.localeCompare(b, undefined, { sensitivity: "base", numeric: true });
+}
+
+/** Parse a date-ish string to a local-midnight timestamp, or null. */
+function parseDate(s: string): number | null {
+  const t = s.trim();
+  if (!t) return null;
+  const m = t.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/);
+  if (m) {
+    const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    return isNaN(d.getTime()) ? null : d.getTime();
+  }
+  const d = new Date(t);
+  return isNaN(d.getTime()) ? null : d.getTime();
 }

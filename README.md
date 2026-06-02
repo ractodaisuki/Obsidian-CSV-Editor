@@ -20,6 +20,15 @@ re-implemented in dependency-free TypeScript (no React).
   copy / cut / paste, rename / sort columns.
 - **Column sorting** – click a header to sort asc/desc. Sorting is non-destructive:
   saving writes back the original on-disk row order (until you make a structural edit).
+- **Search & filter** – a filter bar above the grid combines three filters (AND):
+  - **検索 (search)**: substring match across all columns or one chosen column
+  - **期間 (date range)**: pick a date column and a from/to range (parses
+    `yyyy-mm-dd`, `yyyy/mm/dd`, etc.)
+  - **絞り込み (value filter)**: pick a column and choose one of its distinct
+    values (e.g. a category)
+
+  Filtering is non-destructive like sorting: hidden rows are still saved, and
+  editing a visible cell updates the underlying row without re-hiding it.
 - **Configurable delimiter** – comma, semicolon, tab, or pipe (RFC 4180 quoting on save).
 - **Auto-save** – debounced (default 300 ms, configurable 100–2000 ms), or toggle it
   off and use the toolbar **Save** button / `Cmd+S`.
